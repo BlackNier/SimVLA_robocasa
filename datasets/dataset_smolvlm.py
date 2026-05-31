@@ -13,6 +13,7 @@ from typing import Dict, Iterable, List
 import io
 import json
 import random
+import traceback
 import numpy as np
 import torch
 from torch.utils.data import IterableDataset
@@ -138,39 +139,62 @@ class SmolVLMDataReader(IterableDataset):
     def _iter_one_dataset(self, dataset_name: str) -> Iterable[dict]:
         """Iterate over one dataset."""
         meta = self.metas[dataset_name]
-        traj_indices = list(range(len(meta["datalist"])))
-        if self.training:
-            random.shuffle(traj_indices)
-            
         Handler = get_handler_cls(dataset_name)
         handler = Handler(meta=meta, num_views=self.num_views)
-        
-        for traj_idx in traj_indices:
-            try:
-                for sample in handler.iter_episode(
-                    traj_idx,
-                    num_actions=self.num_actions,
-                    training=self.training,
-                    image_aug=self.image_aug,
-                    lang_aug_map=meta.get("lang_aug_map"),
-                    action_mode=self.action_mode
-                ):
-                    idx_for_delta = meta.get("idx_for_delta", [])
-                    has_proprio = "proprio" in sample
-                    slice_result = action_slice(sample["abs_trajectory"], idx_for_delta)
-                    
-                    if has_proprio:
-                        sample["action"] = slice_result["action"]
-                    else:
-                        sample.update(slice_result)
-                    del sample["abs_trajectory"]
-                    
-                    yield sample
-            except Exception as e:
-                continue
-                
-        if self.training:
-            yield from self._iter_one_dataset(dataset_name)
+        num_errors = 0
+
+        while True:
+            yielded = 0
+            traj_indices = list(range(len(meta["datalist"])))
+            if self.training:
+                random.shuffle(traj_indices)
+
+            for traj_idx in traj_indices:
+                try:
+                    for sample in handler.iter_episode(
+                        traj_idx,
+                        num_actions=self.num_actions,
+                        training=self.training,
+                        image_aug=self.image_aug,
+                        lang_aug_map=meta.get("lang_aug_map"),
+                        action_mode=self.action_mode
+                    ):
+                        idx_for_delta = meta.get("idx_for_delta", [])
+                        has_proprio = "proprio" in sample
+
+                        if has_proprio:
+                            # RoboCasa-style handlers provide proprio separately.
+                            # In that case abs_trajectory is already an action
+                            # chunk starting at the current observation, so do
+                            # not drop the first row as action_slice() does for
+                            # legacy absolute-trajectory handlers.
+                            sample["action"] = sample["abs_trajectory"][: self.num_actions]
+                        else:
+                            slice_result = action_slice(sample["abs_trajectory"], idx_for_delta)
+                            sample.update(slice_result)
+                        del sample["abs_trajectory"]
+
+                        yielded += 1
+                        yield sample
+                except Exception:
+                    num_errors += 1
+                    if num_errors <= 10:
+                        print(
+                            f"[SmolVLMDataReader] Error while reading "
+                            f"dataset={dataset_name}, traj_idx={traj_idx}:"
+                        )
+                        traceback.print_exc()
+                    continue
+
+            if not self.training:
+                break
+
+            if yielded == 0:
+                raise RuntimeError(
+                    f"No samples were yielded from dataset '{dataset_name}'. "
+                    "All trajectories failed or the datalist is empty. "
+                    "Check the printed reader exceptions above; they are the real cause."
+                )
 
     def __iter__(self):
         """Main iteration."""

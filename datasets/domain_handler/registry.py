@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict, Type
 from .base import DomainHandler
 from .libero_hdf5 import LiberoHDF5Handler
+from .robocasa_lerobot import RobocasaLeRobotHandler
 
 # Registry for dataset handlers
 _REGISTRY: Dict[str, Type[DomainHandler]] = {
@@ -12,6 +13,9 @@ _REGISTRY: Dict[str, Type[DomainHandler]] = {
     "libero_goal": LiberoHDF5Handler,
     "libero_object": LiberoHDF5Handler,
     "libero_spatial": LiberoHDF5Handler,
+    # RoboCasa365 v1.0 LeRobot format
+    "robocasa_lerobot": RobocasaLeRobotHandler,
+    "robocasa365": RobocasaLeRobotHandler,
 }
 
 

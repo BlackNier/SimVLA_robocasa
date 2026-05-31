@@ -272,6 +272,121 @@ class LiberoJointActionSpace(BaseActionSpace):
 
 
 # =============================================================================
+# RoboCasa Action Space
+# =============================================================================
+@register_action("robocasa_12dof")
+class Robocasa12DoFActionSpace(BaseActionSpace):
+    """
+    RoboCasa365 PandaOmron mobile-manipulation action space.
+
+    State layout:
+      [eef_pos_rel(3), eef_rot_rel_quat(4), base_pos(3), base_rot_quat(4), gripper_qpos(2)]
+
+    Action layout, intentionally matching robocasa.utils.env_utils.convert_action:
+      [eef_pos(3), eef_rot_axis_angle(3), gripper_close(1), base_motion(4), control_mode(1)]
+    """
+
+    dim_action = 12
+    dim_proprio = 16
+    gripper_idx = (6,)
+
+    def __init__(
+        self,
+        norm_stats_path: Optional[str] = None,
+        use_quantile_norm: bool = False,
+    ):
+        super().__init__()
+        self.use_quantile_norm = use_quantile_norm
+        self.state_norm_stats: Optional[NormStats] = None
+        self.action_norm_stats: Optional[NormStats] = None
+
+        if norm_stats_path:
+            self.load_norm_stats(norm_stats_path)
+
+    def load_norm_stats(self, path: str):
+        stats_dict = load_norm_stats(path)
+
+        if "state" in stats_dict:
+            self.state_norm_stats = stats_dict["state"]
+            print(f"[Robocasa12DoFActionSpace] Loaded state norm stats, dim={len(self.state_norm_stats.mean)}")
+
+        if "actions" in stats_dict:
+            self.action_norm_stats = stats_dict["actions"]
+            print(f"[Robocasa12DoFActionSpace] Loaded action norm stats, dim={len(self.action_norm_stats.mean)}")
+
+    def to(self, device):
+        if self.state_norm_stats is not None:
+            self.state_norm_stats.to(device)
+        if self.action_norm_stats is not None:
+            self.action_norm_stats.to(device)
+        return super().to(device)
+
+    def _normalize_with_stats(self, x: torch.Tensor, stats: NormStats) -> torch.Tensor:
+        if stats.mean.device != x.device:
+            stats.to(x.device)
+
+        D = x.shape[-1]
+        if self.use_quantile_norm and stats.q01 is not None and stats.q99 is not None:
+            q01 = stats.q01[..., :D]
+            q99 = stats.q99[..., :D]
+            return (x - q01) / (q99 - q01 + 1e-6) * 2.0 - 1.0
+
+        mean = stats.mean[..., :D]
+        std = stats.std[..., :D]
+        return (x - mean) / (std + 1e-6)
+
+    def _unnormalize_with_stats(self, x: torch.Tensor, stats: NormStats) -> torch.Tensor:
+        if stats.mean.device != x.device:
+            stats.to(x.device)
+
+        D = x.shape[-1]
+        if self.use_quantile_norm and stats.q01 is not None and stats.q99 is not None:
+            q01 = stats.q01[..., :D]
+            q99 = stats.q99[..., :D]
+            return (x + 1.0) / 2.0 * (q99 - q01 + 1e-6) + q01
+
+        mean = stats.mean[..., :D]
+        std = stats.std[..., :D]
+        return x * (std + 1e-6) + mean
+
+    def normalize_state(self, x: torch.Tensor) -> torch.Tensor:
+        if self.state_norm_stats is not None:
+            return self._normalize_with_stats(x, self.state_norm_stats)
+        return x
+
+    def normalize_action(self, x: torch.Tensor) -> torch.Tensor:
+        if self.action_norm_stats is not None:
+            return self._normalize_with_stats(x, self.action_norm_stats)
+        return x
+
+    def unnormalize_action(self, x: torch.Tensor) -> torch.Tensor:
+        if self.action_norm_stats is not None:
+            return self._unnormalize_with_stats(x, self.action_norm_stats)
+        return x
+
+    def compute_loss(self, pred, target):
+        return {"velocity_loss": torch.mean(torch.square(pred - target))}
+
+    def preprocess(self, proprio, action, mode="train"):
+        return self.normalize_state(proprio), self.normalize_action(action)
+
+    def postprocess(self, action: torch.Tensor) -> torch.Tensor:
+        action = self.unnormalize_action(action)
+        if (
+            self.action_norm_stats is not None
+            and self.action_norm_stats.q01 is not None
+            and self.action_norm_stats.q99 is not None
+        ):
+            if self.action_norm_stats.q01.device != action.device:
+                self.action_norm_stats.to(action.device)
+            D = action.shape[-1]
+            q01 = self.action_norm_stats.q01[..., :D]
+            q99 = self.action_norm_stats.q99[..., :D]
+            action = torch.minimum(torch.maximum(action, q01), q99)
+        return action
+
+
+# =============================================================================
 # Exports
 # =============================================================================
 __all__ = [
@@ -279,6 +394,7 @@ __all__ = [
     "build_action_space",
     "register_action",
     "LiberoJointActionSpace",
+    "Robocasa12DoFActionSpace",
     "ACTION_REGISTRY",
     "NormStats",
     "load_norm_stats",
