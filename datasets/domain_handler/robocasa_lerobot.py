@@ -210,21 +210,35 @@ def create_robocasa_meta(
 
         macros.DATASET_BASE_PATH = dataset_base_path
 
-    from robocasa.utils.dataset_registry import DATASET_SOUP_REGISTRY
     from robocasa.utils.dataset_registry_utils import get_ds_soup
 
-    if dataset_soup in DATASET_SOUP_REGISTRY:
-        datalist = copy.deepcopy(DATASET_SOUP_REGISTRY[dataset_soup])
+    soup_map = {
+        "target50": ("target", "target50", "human"),
+        "target_atomic_seen": ("target", "atomic_seen", "human"),
+        "target_composite_seen": ("target", "composite_seen", "human"),
+        "target_composite_unseen": ("target", "composite_unseen", "human"),
+        "pretrain_atomic_seen": ("pretrain", "atomic_seen", "human"),
+        "pretrain_composite_seen": ("pretrain", "composite_seen", "human"),
+        "pretrain_composite_unseen": ("pretrain", "composite_unseen", "human"),
+        "pretrain_all_atomic_tasks": ("pretrain", "all_atomic_tasks", "human"),
+        "pretrain_all_composite_tasks": ("pretrain", "all_composite_tasks", "human"),
+        "pretrain_human50": ("pretrain", "pretrain50", "human"),
+        "pretrain_human100": ("pretrain", "pretrain100", "human"),
+        "pretrain_human200": ("pretrain", "pretrain200", "human"),
+        "pretrain_human300": ("pretrain", "pretrain300", "human"),
+        "pretrain_human300_mg60": ("pretrain", "pretrain300", "all"),
+    }
+    if dataset_soup in soup_map:
+        split, task_set, source = soup_map[dataset_soup]
     else:
-        task_set = dataset_soup
-        if dataset_soup.startswith("target_"):
-            task_set = dataset_soup.removeprefix("target_")
-        datalist = get_ds_soup(
-            split=split,
-            task_set=task_set,
-            source=source,
-            demo_fraction=demo_fraction,
-        )
+        task_set = dataset_soup.removeprefix("target_")
+
+    datalist = get_ds_soup(
+        split=split,
+        task_set=task_set,
+        source=source,
+        demo_fraction=demo_fraction,
+    )
 
     meta = {
         "dataset_name": "robocasa_lerobot",

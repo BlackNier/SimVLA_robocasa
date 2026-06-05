@@ -27,6 +27,7 @@ import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 from torch.optim import AdamW
+from safetensors.torch import load_file as load_safetensors
 
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from datasets import create_smolvlm_dataloader
@@ -237,6 +238,47 @@ def update_group_lrs(optim, step, args):
             set_group_lr(optim, name, new_lr)
 
 
+def load_smolvla_checkpoint(
+    load_path: str,
+    *,
+    fallback_smolvlm_model_path: str,
+    logger,
+) -> SmolVLMVLA:
+    """
+    Load a SimVLA checkpoint without calling SmolVLMVLA.from_pretrained().
+
+    Transformers v5 refactored dynamic weight loading. Calling an outer
+    from_pretrained for SmolVLMVLA creates a meta-device loading context, while
+    SmolVLMVLA.__init__ itself calls AutoModelForImageTextToText.from_pretrained
+    for the backbone. That nested from_pretrained pattern now errors. Instantiate
+    normally from config, then load the saved state dict by hand.
+    """
+    from models.configuration_smolvlm_vla import SmolVLMVLAConfig
+
+    config = SmolVLMVLAConfig.from_pretrained(load_path)
+    if not getattr(config, "smolvlm_model_path", None):
+        config.smolvlm_model_path = fallback_smolvlm_model_path
+
+    model = SmolVLMVLA(config)
+    safetensors_path = os.path.join(load_path, "model.safetensors")
+    torch_path = os.path.join(load_path, "pytorch_model.bin")
+    if os.path.exists(safetensors_path):
+        state_dict = load_safetensors(safetensors_path, device="cpu")
+    elif os.path.exists(torch_path):
+        state_dict = torch.load(torch_path, map_location="cpu")
+    else:
+        raise FileNotFoundError(
+            f"Could not find model.safetensors or pytorch_model.bin in {load_path}"
+        )
+
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    if missing:
+        logger.warning(f"Missing keys while loading checkpoint: {len(missing)}")
+    if unexpected:
+        logger.warning(f"Unexpected keys while loading checkpoint: {len(unexpected)}")
+    return model
+
+
 # ============================================================
 # Main Training
 # ============================================================
@@ -308,7 +350,11 @@ def main(args):
     
     if load_path and os.path.isdir(load_path) and os.path.exists(os.path.join(load_path, "model.safetensors")):
         logger.info(f"Loading SmolVLM-VLA from checkpoint: {load_path}")
-        model = SmolVLMVLA.from_pretrained(load_path)
+        model = load_smolvla_checkpoint(
+            load_path,
+            fallback_smolvlm_model_path=args.smolvlm_model_path,
+            logger=logger,
+        )
         
         if args.action_mode != model.action_mode:
             logger.warning(f"Overriding model action_mode from '{model.action_mode}' to '{args.action_mode}'")
